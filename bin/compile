@@ -1,83 +1,78 @@
-#!/bin/sh
+#!/usr/bin/env ruby
+# bin/compile <build-dir> <cache-dir> <env-dir>
 
-exec 3<&1
-exec 4<&2
+require "yaml"
+require "pathname"
 
-readenv () {
-  if [ -r "$1" ]
-  then cat "$1"
-  else echo -n "$2"
-  fi
-}
+class CustomBinaries
+  attr_reader :install_dir, :manifest_path, :profile_path, :manifest
 
-env_dir=$3
-build_dir=$1
-cache_dir="$2/$STACK"
+  def initialize(build_dir)
+    @build_dir     = Pathname(build_dir)
+    @install_dir   = @build_dir.join("custom_bin")
+    @manifest_path = @build_dir.join(".custom_binaries")
+    @profile_path  = @build_dir.join(".profile.d/custom_binaries.sh")
+    @manifest = YAML.load_file(@manifest_path) || {}
+  end
 
-debug=$(readenv "$env_dir/mongocryptd-debug" false)
-gm_url=$(readenv "$env_dir/gm_url" ftp://ftp.graphicsmagick.org/pub/GraphicsMagick/1.3/GraphicsMagick-1.3.19.tar.bz2)
-rebuild=$(readenv "$env_dir/mongocryptd-rebuild" false)
+  def run
+    check_manifest_presence
+    ensure_install_dir
+    install_manifest
+    create_profile_script
+    puts
+  end
 
-if [ "$debug" = true ]
-then
-  set -x
-else
-  exec 1>/dev/null
-  exec 2>/dev/null
-fi
+  def check_manifest_presence
+    if manifest.empty?
+      puts "-----> #{ manifest_path } manifest is empty. Skipping."
+      exit 0
+    else
+      puts "-----> Found #{ manifest_path } manifest"
+    end
+  end
 
-gm_name=$(basename "$gm_url" .tar.bz2)
-gm_file=$(basename "$gm_url")
-gm_prefix=/app/vendor
+  def ensure_install_dir
+    if install_dir.exist?
+      puts "-----> Found #{ install_dir } directory"
+    else
+      install_dir.mkdir
+      puts "-----> Created #{ install_dir } directory"
+    end
+  end
 
-stdout () {
-  echo "	+ $@" >&3
-}
+  def install_manifest
+    puts "-----> Installing custom binaries manifest"
 
-stderr () {
-  echo "	+ $@" >&4
-}
+    processes = {}
 
-command () {
-  if [ "$debug" != true ]
-  then stdout " \$ $@"; fi
-  "$@"
-}
+    trap("CHLD") do
+      while processes.any? && pid = Process.waitpid(-1, Process::WNOHANG)
+        bin_name = processes.delete(pid)
+        puts "       ...#{ bin_name } added to #{ install_dir }"
+      end
+    end
 
-if [ "$rebuild" = true -o ! -e "$cache_dir/$gm_file" ]
-then
-    stdout "fetch $gm_url"
-    command wget --progress=dot:binary -O"/tmp/$gm_file" "$gm_url"
+    manifest.each do |bin_name, url|
+      pid = Process.spawn(
+        "curl -L --silent #{ url } | " \
+        "tar x -z -C #{ @install_dir } --transform=s/.*/#{ bin_name }/"
+      )
+      processes[pid] = bin_name
+      puts "       Downloading and Extracting #{ bin_name } from #{ url }..."
+    end
 
-    stdout "compile $gm_name"
-    tar -C /tmp -jxf "/tmp/$gm_file"
-    cd "/tmp/$gm_name" && {
-      command ./configure --enable-static=no --enable-shared=yes --prefix="$gm_prefix/mongocryptd"
-    }
+    sleep 0.1 while processes.any?
+  end
 
-    cd "/tmp/$gm_name" && {
-      mkdir -p "$gm_prefix/mongocryptd"
-      if ! command make
-      then exit 1; fi
-    }
+  def create_profile_script
+    profile_path.parent.mkpath
+    File.open(profile_path, "w") do |file|
+      file.puts "# add custom binaries to the path"
+      file.puts "export PATH=$PATH:$HOME/#{ install_dir.basename }"
+    end
+    puts "-----> Created profile.d Script at #{ profile_path }"
+  end
+end
 
-    command "install $gm_name [cache]"
-    cd "/tmp/$gm_name" && {
-      command make install
-
-      mkdir -p "$cache_dir"
-      cd "$gm_prefix" && {
-        command tar -cjf "$cache_dir/$gm_file" mongocryptd
-      }
-    }
-fi
-
-stdout "install $gm_name"
-mkdir -p "$build_dir/vendor"
-mkdir -p "$build_dir/.profile.d"
-
-cat <<EOF >"$build_dir/.profile.d/mongocryptd.sh"
-export PATH="\$PATH:$gm_prefix/mongocryptd/bin"
-EOF
-
-command tar -C "$build_dir/vendor" -xjf "$cache_dir/$gm_file"
+CustomBinaries.new(ARGV[0]).run

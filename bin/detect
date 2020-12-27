@@ -1,3 +1,9 @@
-#!/bin/sh
+#!/usr/bin/env bash
+# bin/detect <build-dir>
 
-echo "mongocryptd"
+if [ -f "$1/.custom_binaries" ]; then
+  echo "Custom Binaries"
+  exit 0
+else
+  exit 1
+fi
