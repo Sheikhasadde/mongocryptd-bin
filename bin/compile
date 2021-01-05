@@ -9,7 +9,7 @@ class CustomBinaries
 
   def initialize(build_dir)
     @build_dir     = Pathname(build_dir)
-    @install_dir   = @build_dir.join("mongo")
+    @install_dir   = @build_dir.join("mongobins")
     @manifest_path = @build_dir.join(".custom_binaries")
     @profile_path  = @build_dir.join(".profile.d/custom_binaries.sh")
     @manifest = YAML.load_file(@manifest_path) || {}
